@@ -3,122 +3,216 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JSON to YAML Canvas</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+    <title>Bottle Detector Canvas</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: #f4f4f9;
-            margin: 0;
+            font-family: sans-serif;
+            background-color: #f0f2f5;
             display: flex;
             flex-direction: column;
-            height: 100-vh;
+            align-items: center;
             padding: 20px;
-            box-sizing: border-box;
         }
-        header { margin-bottom: 20px; }
-        .canvas {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            flex-grow: 1;
-        }
-        .panel {
-            display: flex;
-            flex-direction: column;
-        }
-        label {
-            font-weight: bold;
-            margin-bottom: 10px;
-            color: #333;
-        }
-        textarea {
-            flex-grow: 1;
-            padding: 15px;
-            border: 1px solid #ccc;
+
+        .controls {
+            margin-bottom: 20px;
+            padding: 20px;
+            background: white;
             border-radius: 8px;
-            font-family: "Fira Code", "Courier New", monospace;
-            font-size: 14px;
-            resize: none;
-            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
         }
-        textarea:focus {
-            outline: none;
-            border-color: #007bff;
-        }
-        .error {
-            color: #d9534f;
-            font-size: 13px;
-            margin-top: 5px;
-            height: 20px;
-        }
-        button {
-            padding: 10px 20px;
-            background-color: #007bff;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
+
+        #status {
             margin-top: 10px;
+            font-weight: bold;
+            color: #666;
         }
-        button:hover { background-color: #0056b3; }
+
+        /* The container for the image and canvas overlay */
+        #canvas-container {
+            position: relative;
+            /* Start with a reasonable default size, it will adjust to image */
+            min-width: 300px;
+            min-height: 200px;
+            border: 2px dashed #ccc;
+            background: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: auto; /* Allow scrolling for large images */
+             max-width: 90vw;
+             max-height: 80vh;
+        }
+
+        /* Key part: Overlap image and canvas precisely */
+        #uploaded-image, #overlay-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        /* Hide image initially */
+        #uploaded-image {
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        #uploaded-image.loaded {
+            opacity: 1;
+            position: relative; /* Switch back to relative once loaded to give container size */
+        }
+
+         /* Canvas must remain absolute to overlap the relative image */
+        #overlay-canvas.loaded {
+             pointer-events: none; /* Let clicks pass through to image if needed */
+        }
+
+        .placeholder-text {
+            color: #aaa;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
 
-<header>
-    <h2>JSON to YAML Converter</h2>
-    <p>Paste your JSON on the left; get YAML on the right.</p>
-</header>
+    <div class="controls">
+        <h2>Bottle Detector</h2>
+        <p>Paste an image (Ctrl+V) directly onto the page, or upload one.</p>
+        <input type="file" id="fileInput" accept="image/*">
+        <div id="status">Loading AI Model... (this may take a few seconds initially)</div>
+    </div>
 
-<div class="canvas">
-    <div class="panel">
-        <label>JSON Input</label>
-        <textarea id="jsonInput" placeholder='{ "key": "value" }'></textarea>
-        <div id="errorMessage" class="error"></div>
+    <div id="canvas-container">
+        <span class="placeholder-text" id="placeholder">No image loaded yet...</span>
+        <img id="uploaded-image" crossorigin="anonymous">
+        <canvas id="overlay-canvas"></canvas>
     </div>
-    <div class="panel">
-        <label>YAML Output</label>
-        <textarea id="yamlOutput" readonly placeholder="YAML result will appear here..."></textarea>
-        <button onclick="copyToClipboard()">Copy YAML</button>
-    </div>
-</div>
+
 
 <script>
-    const jsonInput = document.getElementById('jsonInput');
-    const yamlOutput = document.getElementById('yamlOutput');
-    const errorMessage = document.getElementById('errorMessage');
+    let model = null;
+    const statusEl = document.getElementById('status');
+    const imgEl = document.getElementById('uploaded-image');
+    const canvasEl = document.getElementById('overlay-canvas');
+    const containerEl = document.getElementById('canvas-container');
+    const placeholderEl = document.getElementById('placeholder');
+    const ctx = canvasEl.getContext('2d');
 
-    jsonInput.addEventListener('input', () => {
-        const val = jsonInput.value.trim();
-        
-        if (!val) {
-            yamlOutput.value = '';
-            errorMessage.textContent = '';
-            return;
-        }
+    // --- 1. Initialization ---
 
-        try {
-            // 1. Parse JSON
-            const parsed = JSON.parse(val);
-            // 2. Convert to YAML using js-yaml
-            const yaml = jsyaml.dump(parsed);
-            
-            yamlOutput.value = yaml;
-            errorMessage.textContent = '';
-        } catch (e) {
-            errorMessage.textContent = "Invalid JSON: " + e.message;
-            yamlOutput.value = '';
+    // Load the COCO-SSD model first
+    cocoSsd.load().then(loadedModel => {
+        model = loadedModel;
+        statusEl.innerText = "AI Model Ready. Paste or upload an image.";
+        statusEl.style.color = "green";
+    });
+
+    // --- 2. Input Handling (Paste & Upload) ---
+
+    // Handle File Upload
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+        if (e.target.files[0]) {
+            processFile(e.target.files[0]);
         }
     });
 
-    function copyToClipboard() {
-        yamlOutput.select();
-        document.execCommand('copy');
-        alert('YAML copied to clipboard!');
-    }
-</script>
+    // Handle Paste Event anywhere on the document
+    document.addEventListener('paste', (e) => {
+        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+        for (const index in items) {
+            const item = items[index];
+            if (item.kind === 'file') {
+                const blob = item.getAsFile();
+                processFile(blob);
+                return; // Stop after finding the first file
+            }
+        }
+    });
 
+    function processFile(file) {
+        if (!file.type.startsWith('image/')){
+             statusEl.innerText = "Error: Paste or upload an image file.";
+             statusEl.style.color = "red";
+             return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            // Set the image source to the uploaded data
+            imgEl.src = event.target.result;
+            // The rest of the logic happens in imgEl.onload below
+        };
+        reader.readAsDataURL(file);
+    }
+
+
+    // --- 3. Core Logic: When image loads, detect and draw ---
+
+    imgEl.onload = () => {
+        // UI updates
+        placeholderEl.style.display = 'none';
+        imgEl.classList.add('loaded');
+        canvasEl.classList.add('loaded');
+        statusEl.innerText = "Analyzing image for bottles...";
+        statusEl.style.color = "#666";
+
+        // 1. Resize Canvas to match Image exactly
+        canvasEl.width = imgEl.width;
+        canvasEl.height = imgEl.height;
+        
+        // Clear previous drawings
+        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+
+        // Ensure model is loaded before running detection
+        if (!model) {
+            statusEl.innerText = "Error: Model not loaded yet. Please refresh.";
+             statusEl.style.color = "red";
+            return;
+        }
+
+        // 2. Run Detection
+        model.detect(imgEl).then(predictions => {
+            statusEl.innerText = `Analysis complete. Found ${predictions.length} objects.`;
+             statusEl.style.color = "green";
+            drawBoxes(predictions);
+        });
+    };
+
+
+    // --- 4. Drawing Logic ---
+
+    function drawBoxes(predictions) {
+        predictions.forEach(prediction => {
+            // Filter: We only care about bottles
+            if (prediction.class === 'bottle') {
+                
+                const [x, y, width, height] = prediction.bbox;
+                const score = Math.round(prediction.score * 100);
+
+                // Draw Rectangle Style
+                ctx.strokeStyle = '#FF0000'; // Red box
+                ctx.lineWidth = 4;
+                ctx.strokeRect(x, y, width, height);
+
+                // Draw Label Style
+                ctx.font = '18px Arial';
+                ctx.fillStyle = '#FF0000';
+                // Draw background for text for readability
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillRect(x, y - 25, textWidth + 10, 25);
+
+                // Draw text over the background
+                ctx.fillStyle = '#FFFFFF';
+                const text = `Bottle (${score}%)`;
+                ctx.fillText(text, x + 5, y - 7);
+            }
+        });
+    }
+
+</script>
 </body>
 </html>
